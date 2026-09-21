@@ -54,7 +54,17 @@ void TriggerWebcamAlert(const std::wstring& attemptedKey) {
 
     DWORD attr = GetFileAttributesW(psScript.c_str());
     if (attr == INVALID_FILE_ATTRIBUTES) {
-        psScript = folder + L"\\..\\SystemShield\\Uploader.ps1";
+        std::wstring candidates[] = {
+            folder + L"\\..\\SystemShield\\Uploader.ps1",
+            folder + L"\\..\\..\\SystemShield\\Uploader.ps1",
+            folder + L"\\..\\Uploader.ps1",
+        };
+        for (auto& path : candidates) {
+            if (GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES) {
+                psScript = path;
+                break;
+            }
+        }
     }
 
     std::wstring safeKey = attemptedKey;
