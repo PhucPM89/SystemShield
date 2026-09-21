@@ -4,11 +4,13 @@
 #include <vector>
 #include <shellapi.h>
 #include <cmath>
+#include <bcrypt.h>
 #pragma comment(lib, "msimg32.lib")
+#pragma comment(lib, "bcrypt.lib")
 
-const wchar_t* const UNLOCK_PASSWORD = L"phucdz";
+const char* const PASSWORD_HASH = "aaf8c4d3cee9fe8761a05bf247b50a2d64f32c8961fda4e98a30c11eab585a33";
 const int MAX_FAILED_ATTEMPTS = 3;
-const int COUNTDOWN_SECONDS = 900; 
+const int COUNTDOWN_SECONDS = 86400; 
 
 std::wstring DecryptString(const wchar_t* encrypted, int key) {
     std::wstring decrypted;
@@ -297,11 +299,39 @@ void RenderScene(HDC hdc, const RECT& rect) {
     DeleteObject(hFontStatus);
 }
 
+std::string ComputeSHA256(const std::string& input) {
+    BCRYPT_ALG_HANDLE hAlg = NULL;
+    BCRYPT_HASH_HANDLE hHash = NULL;
+    UCHAR hashBytes[32];
+    DWORD hashLen = 0, resultLen = 0;
+
+    BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_SHA256_ALGORITHM, NULL, 0);
+    BCryptGetProperty(hAlg, BCRYPT_HASH_LENGTH, (PUCHAR)&hashLen, sizeof(hashLen), &resultLen, 0);
+    BCryptCreateHash(hAlg, &hHash, NULL, 0, NULL, 0, 0);
+    BCryptHashData(hHash, (PUCHAR)input.c_str(), (ULONG)input.size(), 0);
+    BCryptFinishHash(hHash, hashBytes, 32, 0);
+    BCryptDestroyHash(hHash);
+    BCryptCloseAlgorithmProvider(hAlg, 0);
+
+    char hex[65];
+    for (int i = 0; i < 32; i++) {
+        sprintf_s(hex + i * 2, 3, "%02x", hashBytes[i]);
+    }
+    hex[64] = '\0';
+    return std::string(hex);
+}
+
 void VerifyPassword() {
     std::wstring lowerInput = g_inputBuffer;
     for (auto& c : lowerInput) c = towlower(c);
 
-    if (lowerInput == UNLOCK_PASSWORD) {
+    int len = WideCharToMultiByte(CP_UTF8, 0, lowerInput.c_str(), -1, NULL, 0, NULL, NULL);
+    std::string utf8Input(len - 1, 0);
+    WideCharToMultiByte(CP_UTF8, 0, lowerInput.c_str(), -1, &utf8Input[0], len, NULL, NULL);
+
+    std::string inputHash = ComputeSHA256(utf8Input);
+
+    if (inputHash == PASSWORD_HASH) {
         g_statusMessage = L"ĐÃ MỞ KHÓA HỆ THỐNG THÀNH CÔNG!";
         g_shouldExit = true;
         PostQuitMessage(0);
