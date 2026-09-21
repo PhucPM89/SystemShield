@@ -401,13 +401,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         if (g_inputBuffer.length() < 30) {
             g_inputBuffer += ch;
             g_frameCount += 2;
-
-            std::wstring lowerInput = g_inputBuffer;
-            for (auto& c : lowerInput) c = towlower(c);
-            if (lowerInput.find(UNLOCK_PASSWORD) != std::wstring::npos) {
-                VerifyPassword();
-            }
-
             InvalidateRect(hwnd, NULL, FALSE);
         }
         return 0;
