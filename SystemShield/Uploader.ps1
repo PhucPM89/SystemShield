@@ -8,27 +8,52 @@ $discordWebhookUrl = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase6
 $filePath = $null
 $captureFile = Join-Path $env:TEMP "intruder_capture.jpg"
 
-try {
-    $wiaDialog = New-Object -ComObject WIA.CommonDialog
-    $wiaDevMgr = New-Object -ComObject WIA.DeviceManager
-    $webcam = $null
-    foreach ($devInfo in $wiaDevMgr.DeviceInfos) {
-        if ($devInfo.Type -eq 2) {
-            $webcam = $devInfo
-            break
-        }
-    }
-    if ($webcam -ne $null) {
-        $device = $webcam.Connect()
-        $item = $device.Items.Item(1)
-        $img = $item.Transfer("{B96B3CAE-0728-11D3-9D7B-0000F81EF32E}")
-        $img.SaveFile($captureFile)
-        if (Test-Path $captureFile) {
-            $filePath = $captureFile
-        }
-    }
-} catch { }
+$filePath = $null
+$captureFile = Join-Path $env:TEMP "intruder_capture.jpg"
+if (Test-Path $captureFile) { Remove-Item $captureFile -Force -ErrorAction SilentlyContinue }
 
+# 1. Thu thập hình ảnh từ Webcam bằng ffmpeg (DirectShow)
+$ffmpegCmd = $null
+if (Get-Command ffmpeg -ErrorAction SilentlyContinue) {
+    $ffmpegCmd = "ffmpeg"
+} else {
+    $commonFfmpeg = @(
+        "C:\ProgramData\chocolatey\bin\ffmpeg.exe",
+        "C:\ffmpeg\bin\ffmpeg.exe",
+        "C:\tools\ffmpeg\bin\ffmpeg.exe",
+        "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\Gyan.FFmpeg*\ffmpeg-*\bin\ffmpeg.exe"
+    )
+    foreach ($p in $commonFfmpeg) {
+        $found = Get-Item $p -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($found) { $ffmpegCmd = $found.FullName; break }
+    }
+}
+
+if ($ffmpegCmd) {
+    try {
+        $devList = & $ffmpegCmd -list_devices true -f dshow -i dummy 2>&1 | Out-String
+        $cameras = @()
+        foreach ($line in ($devList -split "`r?`n")) {
+            if ($line -match '"([^"]+)"\s+\(video\)') {
+                $cameras += $Matches[1]
+            }
+        }
+        
+        $chosenCam = $cameras | Where-Object { $_ -notmatch 'Virtual|OBS' } | Select-Object -First 1
+        if (-not $chosenCam) { $chosenCam = $cameras | Select-Object -First 1 }
+
+        if ($chosenCam) {
+            & $ffmpegCmd -y -f dshow -i "video=$chosenCam" -frames:v 1 -q:v 2 $captureFile 2>&1 | Out-Null
+            if (Test-Path $captureFile) {
+                if ((Get-Item $captureFile).Length -gt 1000) {
+                    $filePath = $captureFile
+                }
+            }
+        }
+    } catch { }
+}
+
+# 2. Fallback sang Windows Camera App nếu ffmpeg không khả dụng
 if ($filePath -eq $null) {
     try {
         Start-Process "microsoft.windows.camera:" -ErrorAction SilentlyContinue
@@ -163,7 +188,7 @@ if (![string]::IsNullOrWhiteSpace($discordWebhookUrl)) {
             
             $fileNameOnly = [System.IO.Path]::GetFileName($filePath)
             $bodyParts += "--$boundary"
-            $bodyParts += "Content-Disposition: form-data; name=`"file`"; filename=`"$fileNameOnly`""
+            $bodyParts += "Content-Disposition: form-data; name=`"files[0]`"; filename=`"$fileNameOnly`""
             $bodyParts += "Content-Type: image/jpeg$LF"
 
             $enc = [System.Text.Encoding]::UTF8
