@@ -1,3 +1,0 @@
-﻿  Lock.cpp
-D:\C(41,67): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data
-  Lock.vcxproj -> D:\C#\Lock\x64\Debug\Lock.exe
