@@ -1,0 +1,28 @@
+# Build output
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+*.obj
+*.exe
+*.pdb
+*.lib
+*.iobj
+*.ipdb
+*.ilk
+*.log
+*.tlog/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.ncb
+*.sdf
+*.opensdf
+*.VC.db
+*.VC.opendb
+
+# Temp
+*.tmp
+*.bak
