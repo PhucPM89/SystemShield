@@ -2,7 +2,14 @@ param(
     [string]$AttemptedKey = ""
 )
 
-$discordWebhookUrl = "WEBHOOK_REMOVED"
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$configFile = Join-Path $scriptDir "config.txt"
+if (Test-Path $configFile) {
+    $discordWebhookUrl = (Get-Content $configFile -Raw).Trim()
+} else {
+    $discordWebhookUrl = $env:DISCORD_WEBHOOK_URL
+}
+if ([string]::IsNullOrEmpty($discordWebhookUrl)) { exit }
 
 $filePath = $null
 $camRollDir = Join-Path ([Environment]::GetFolderPath('MyPictures')) "Camera Roll"

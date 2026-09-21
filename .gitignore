@@ -26,3 +26,6 @@ x86/
 # Temp
 *.tmp
 *.bak
+
+# Secrets
+config.txt
