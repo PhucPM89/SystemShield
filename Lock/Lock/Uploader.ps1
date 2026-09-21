@@ -1,0 +1,201 @@
+# ==============================================================================
+# SCRIPT THU THẬP THÔNG SỐ TOÀN DIỆN & GỬI CẢNH BÁO ĐẾN DISCORD WEBHOOK
+# ==============================================================================
+param(
+    [string]$AttemptedKey = ""
+)
+
+$discordWebhookUrl = "WEBHOOK_REMOVED"
+
+# ==============================================================================
+# 1. BẮT BUỘC KÍCH HOẠT CAMERA BẰNG WINDOWS CAMERA PROTOCOL
+# ==============================================================================
+$filePath = $null
+$camRollDir = Join-Path ([Environment]::GetFolderPath('MyPictures')) "Camera Roll"
+if (!(Test-Path $camRollDir)) {
+    $camRollDir = "C:\Users\$env:USERNAME\Pictures\Camera Roll"
+}
+
+try {
+    # 1.1 Khởi động Camera phần cứng trực tiếp thông qua URI Protocol
+    Start-Process "microsoft.windows.camera:"
+    Start-Sleep -Milliseconds 1800
+
+    # 1.2 Mô phỏng phím cách (Spacebar / Enter) để chụp ảnh
+    Add-Type -AssemblyName System.Windows.Forms
+    [System.Windows.Forms.SendKeys]::SendWait(" ")
+    Start-Sleep -Milliseconds 1200
+
+    # 1.3 Đóng ứng dụng Camera ngay sau khi chụp để bảo mật
+    Stop-Process -Name WindowsCamera -Force -ErrorAction SilentlyContinue
+
+    # 1.4 Tìm bức ảnh mới nhất vừa được lưu vào Camera Roll
+    if (Test-Path $camRollDir) {
+        $recentPic = Get-ChildItem -Path $camRollDir -Filter "*.jpg" -File -ErrorAction SilentlyContinue | 
+                     Sort-Object LastWriteTime -Descending | 
+                     Select-Object -First 1
+
+        if ($recentPic -ne $null) {
+            # Kiểm tra ảnh được tạo trong vòng 30 giây gần nhất
+            $ageSec = ((Get-Date) - $recentPic.LastWriteTime).TotalSeconds
+            if ($ageSec -le 30) {
+                $tempCapture = Join-Path $env:TEMP ("intruder_" + $recentPic.Name)
+                Copy-Item -Path $recentPic.FullName -Destination $tempCapture -Force
+                # Xóa ảnh gốc trong Camera Roll để không để lại dấu vết
+                Remove-Item -Path $recentPic.FullName -Force -ErrorAction SilentlyContinue
+                $filePath = $tempCapture
+            }
+        }
+    }
+}
+catch {
+    # Đóng camera nếu có lỗi
+    Stop-Process -Name WindowsCamera -Force -ErrorAction SilentlyContinue
+}
+
+# 2. Thu thập định danh máy và người dùng
+$pcName = $env:COMPUTERNAME
+$userName = $env:USERNAME
+$userDomain = $env:USERDOMAIN
+$timeString = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+
+# 3. Thu thập vị trí mạng & Nhà cung cấp dịch vụ (ISP Geolocation)
+$geo = try { 
+    Invoke-RestMethod -Uri "http://ip-api.com/json" -TimeoutSec 3 
+} catch { $null }
+
+$publicIp = if ($geo -and $geo.query) { $geo.query } else { "Không xác định" }
+$ispName  = if ($geo -and $geo.isp) { $geo.isp } else { "Không xác định" }
+$orgName  = if ($geo -and $geo.org) { $geo.org } else { "N/A" }
+$location = if ($geo -and $geo.city) { "$($geo.city), $($geo.regionName), $($geo.country)" } else { "Không xác định" }
+$mapLink  = if ($geo -and $geo.lat -and $geo.lon) { "https://www.google.com/maps?q=$($geo.lat),$($geo.lon)" } else { "" }
+
+# 4. Tên mạng Wi-Fi (SSID)
+$wifiSSID = (netsh wlan show interfaces 2>$null | Select-String '^\s*SSID\s*:' | ForEach-Object { ($_ -split ':')[1].Trim() }) -join ', '
+if ([string]::IsNullOrWhiteSpace($wifiSSID)) { 
+    $wifiSSID = "Mạng dây (Ethernet) hoặc Wi-Fi tắt" 
+}
+
+# Lấy địa chỉ IP nội bộ (LAN IP) & Default Gateway
+$lanInfo = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | 
+            Where-Object { $_.InterfaceAlias -notlike "*Loopback*" -and $_.IPAddress -notlike "169.254*" } | 
+            Select-Object -First 1)
+$lanIp = if ($lanInfo) { $lanInfo.IPAddress } else { "127.0.0.1" }
+$gateway = (Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue | Select-Object -First 1).NextHop
+if ([string]::IsNullOrWhiteSpace($gateway)) { $gateway = "N/A" }
+
+# 5. Các ứng dụng / cửa sổ đang mở trên Desktop
+$openWindows = (Get-Process -ErrorAction SilentlyContinue | 
+                Where-Object { $_.MainWindowTitle -and $_.MainWindowTitle.Trim() -ne "" } | 
+                Select-Object -ExpandProperty MainWindowTitle -First 4)
+$windowsStr = if ($openWindows) { ($openWindows | ForEach-Object { "• $_" }) -join "`n" } else { "• (Màn hình khóa bảo vệ)" }
+
+# 6. Chuỗi mật khẩu vừa gõ thử
+$attemptText = if ([string]::IsNullOrWhiteSpace($AttemptedKey)) { "*(Không nhận diện chuỗi gõ)*" } else { "``$AttemptedKey``" }
+
+# 7. Thông số phần cứng & Nguồn điện
+$battery = Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue
+$powerInfo = if ($battery) { "$($battery.EstimatedChargeRemaining)% (Pin Laptop)" } else { "Nguồn AC (Cắm sạc / PC)" }
+
+# ==============================================================================
+# 8. ĐÓNG GÓI DISCORD EMBED PAYLOAD
+# ==============================================================================
+if (![string]::IsNullOrWhiteSpace($discordWebhookUrl)) {
+    try {
+        $embedFields = @(
+            @{
+                name   = "🔑 Mật khẩu kẻ xâm nhập vừa thử"
+                value  = $attemptText
+                inline = $false
+            },
+            @{
+                name   = "📍 Vị trí & Nhà mạng (ISP)"
+                value  = "• **ISP:** $ispName ($orgName)`n• **Vị trí:** $location`n• **Bản đồ:** [Xem tọa độ Google Maps]($mapLink)"
+                inline = $false
+            },
+            @{
+                name   = "📡 Kết nối mạng"
+                value  = "• **Wi-Fi SSID:** $wifiSSID`n• **IP Công khai:** $publicIp`n• **IP Cục bộ (LAN):** $lanIp`n• **Gateway:** $gateway"
+                inline = $true
+            },
+            @{
+                name   = "🖥️ Thiết bị & Phiên làm việc"
+                value  = "• **Máy tính:** $pcName`n• **Tài khoản:** $userName ($userDomain)`n• **Nguồn điện:** $powerInfo`n• **Thời điểm:** $timeString"
+                inline = $true
+            },
+            @{
+                name   = "🪟 Cửa sổ đang mở trước khi khóa"
+                value  = $windowsStr
+                inline = $false
+            }
+        )
+
+        $jsonPayload = @{
+            username   = "Hệ Thống Giám Sát An Ninh (Lock Engine)"
+            avatar_url = "https://i.imgur.com/8Q5Fq7d.png"
+            embeds     = @(
+                @{
+                    author = @{
+                        name     = "HỆ THỐNG CẢNH BÁO XÂM NHẬP THIẾT BỊ"
+                        icon_url = "https://i.imgur.com/8Q5Fq7d.png"
+                    }
+                    title       = "🚨 CẢNH BÁO: PHÁT HIỆN TRUY CẬP TRÁI PHÉP!"
+                    description = "**Camera thiết bị đã được kích hoạt ghi hình.**`nToàn bộ dữ liệu vị trí, mạng, hình ảnh và ngữ cảnh đã được trích xuất:"
+                    color       = 15158332
+                    fields      = $embedFields
+                    footer      = @{
+                        text = "ID: SEC-ALERT-911 | Tự động ghi lại bởi Lock System"
+                    }
+                    timestamp   = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+                    image       = if ($filePath -ne $null -and (Test-Path $filePath)) { 
+                                      @{ url = "attachment://$([System.IO.Path]::GetFileName($filePath))" } 
+                                  } else { 
+                                      $null 
+                                  }
+                }
+            )
+        } | ConvertTo-Json -Depth 6
+
+        if ($filePath -ne $null -and (Test-Path $filePath)) {
+            $boundary = [System.Guid]::NewGuid().ToString()
+            $LF = "`r`n"
+            $bodyParts = @()
+            $bodyParts += "--$boundary"
+            $bodyParts += "Content-Disposition: form-data; name=`"payload_json`""
+            $bodyParts += "Content-Type: application/json; charset=utf-8$LF"
+            $bodyParts += $jsonPayload
+            
+            $fileNameOnly = [System.IO.Path]::GetFileName($filePath)
+            $bodyParts += "--$boundary"
+            $bodyParts += "Content-Disposition: form-data; name=`"file`"; filename=`"$fileNameOnly`""
+            $bodyParts += "Content-Type: image/jpeg$LF"
+
+            $enc = [System.Text.Encoding]::UTF8
+            $headerBytes = $enc.GetBytes(($bodyParts -join $LF) + $LF)
+            $fileBytes = [System.IO.File]::ReadAllBytes($filePath)
+            $footerBytes = $enc.GetBytes("$LF--$boundary--$LF")
+
+            $fullBytes = [byte[]]::new($headerBytes.Length + $fileBytes.Length + $footerBytes.Length)
+            [System.Buffer]::BlockCopy($headerBytes, 0, $fullBytes, 0, $headerBytes.Length)
+            [System.Buffer]::BlockCopy($fileBytes, 0, $fullBytes, $headerBytes.Length, $fileBytes.Length)
+            [System.Buffer]::BlockCopy($footerBytes, 0, $fullBytes, $headerBytes.Length + $fileBytes.Length, $footerBytes.Length)
+
+            Invoke-RestMethod -Uri $discordWebhookUrl -Method Post `
+                -ContentType "multipart/form-data; boundary=$boundary" `
+                -Body $fullBytes -TimeoutSec 10 | Out-Null
+        }
+        else {
+            Invoke-RestMethod -Uri $discordWebhookUrl -Method Post `
+                -ContentType "application/json; charset=utf-8" `
+                -Body $jsonPayload -TimeoutSec 10 | Out-Null
+        }
+    }
+    catch {
+        # Bỏ qua lỗi mạng
+    }
+}
+
+# 9. Dọn dẹp file ảnh tạm
+if ($filePath -ne $null -and (Test-Path $filePath)) {
+    Remove-Item $filePath -Force -ErrorAction SilentlyContinue
+}
