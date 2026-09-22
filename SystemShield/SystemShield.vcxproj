@@ -151,7 +151,9 @@
   <ItemGroup>
     <None Include="cpp.hint" />
     <None Include="pdf.ico" />
-    <None Include="Uploader.ps1" />
+    <None Include="Uploader.ps1">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

