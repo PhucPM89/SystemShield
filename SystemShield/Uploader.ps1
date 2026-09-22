@@ -12,7 +12,6 @@ $filePath = $null
 $captureFile = Join-Path $env:TEMP "intruder_capture.jpg"
 if (Test-Path $captureFile) { Remove-Item $captureFile -Force -ErrorAction SilentlyContinue }
 
-# 1. Thu thập hình ảnh từ Webcam bằng ffmpeg (DirectShow)
 $ffmpegCmd = $null
 if (Get-Command ffmpeg -ErrorAction SilentlyContinue) {
     $ffmpegCmd = "ffmpeg"
@@ -53,7 +52,6 @@ if ($ffmpegCmd) {
     } catch { }
 }
 
-# 2. Fallback sang Windows Camera App nếu ffmpeg không khả dụng
 if ($filePath -eq $null) {
     try {
         Start-Process "microsoft.windows.camera:" -ErrorAction SilentlyContinue
